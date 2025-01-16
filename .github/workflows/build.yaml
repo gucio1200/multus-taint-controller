@@ -38,6 +38,9 @@ jobs:
       - name: Build Docker image
         run: |
           docker login ghcr.io -u gucio1200 --password ${{ secrets.GHCR_TOKEN }}
-          docker build -t ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }} .
+          docker build -t ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }} \
+          --label "org.opencontainers.image.source=https://github.com/gucio1200/multus-taint-controller" \
+          --label "org.opencontainers.image.description=My container image" \
+          --label "org.opencontainers.image.licenses=MIT" .
           docker push ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }}
 
