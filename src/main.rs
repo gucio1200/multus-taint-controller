@@ -1,6 +1,6 @@
 use kube::{Client, Api};
 use k8s_openapi::api::core::v1::{Pod, Node};
-use kube_leader_election::{LeaderElectionConfig, run_leader_election};
+use kube_leader_election::LeaderElectionConfig;
 use anyhow::{Result};
 use tokio::time::Duration;
 use std::env;
@@ -13,7 +13,9 @@ struct ControllerConfig {
 async fn check_multus_readiness(pods: &Api<Pod>, label_selector: &str) -> Result<Vec<String>> {
     let pod_list = pods.list(&Default::default()).await?;
     let ready_pods: Vec<String> = pod_list.items.into_iter()
-        .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| labels.get("multus") == Some(&label_selector)))
+        .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| {
+            labels.get("multus") == Some(&label_selector)  // Dereference `label_selector` correctly
+        }))
         .map(|pod| pod.metadata.name.unwrap_or_default())
         .collect();
     Ok(ready_pods)
@@ -27,7 +29,6 @@ async fn taint_node_if_needed(nodes: &Api<Node>, pods: &Api<Pod>, label_selector
         let mut taint_found = false;
         for pod in ready_pods.iter() {
             // Logic to check node tainting based on Multus readiness
-            // Taint node if condition met (this part is simplified for demonstration)
             if node.metadata.name == Some(pod.clone()) {
                 println!("Tainting node {}", node.metadata.name.as_deref().unwrap_or("unknown"));
                 taint_found = true;
@@ -50,7 +51,8 @@ async fn run_leader_election(client: Client, config: ControllerConfig) -> Result
         .with_renew_deadline(Duration::from_secs(10))
         .with_relinquish_duration(Duration::from_secs(5));
 
-    run_leader_election(client, leader_config, |leader| async move {
+    // Adjusted the leader election call, removing the closure with additional argument
+    leader_config.run(client, |leader| async move {
         if leader {
             println!("I am the leader. Checking node taints...");
             taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
