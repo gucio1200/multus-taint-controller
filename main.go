@@ -11,8 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/util/retry"
-	"k8s.io/client-go/util/wait"
 	"k8s.io/client-go/util/leaderelection"
 	"k8s.io/client-go/util/leaderelection/leaderelectionconfig"
 	"k8s.io/klog/v2"
