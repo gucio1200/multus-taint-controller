@@ -1,5 +1,5 @@
-use kube::{Api, Client};
-use kube::runtime::leaderelection::{LeaderElection, LeaderElectionConfig};
+use kube::{Client, Api};
+use kube::runtime::leader_election::{LeaderElection, LeaderElectionConfig};
 use kube::api::{Pod, Node};
 use k8s_openapi::api::core::v1::{Pod as K8sPod, Node as K8sNode};
 use anyhow::{Result, Context};
