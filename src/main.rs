@@ -1,6 +1,5 @@
 use kube::{Client, Api};
 use k8s_openapi::api::core::v1::{Pod, Node};
-use kube_leader_election::LeaderElectionConfig;
 use anyhow::{Result};
 use tokio::time::Duration;
 use std::env;
@@ -14,7 +13,7 @@ async fn check_multus_readiness(pods: &Api<Pod>, label_selector: &str) -> Result
     let pod_list = pods.list(&Default::default()).await?;
     let ready_pods: Vec<String> = pod_list.items.into_iter()
         .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| {
-            labels.get("multus") == Some(&label_selector)  // Dereference `label_selector` correctly
+            labels.get("multus") == Some(&label_selector)  // Dereference correctly
         }))
         .map(|pod| pod.metadata.name.unwrap_or_default())
         .collect();
@@ -42,24 +41,20 @@ async fn taint_node_if_needed(nodes: &Api<Node>, pods: &Api<Pod>, label_selector
     Ok(())
 }
 
+// You can implement your leader election logic here
 async fn run_leader_election(client: Client, config: ControllerConfig) -> Result<()> {
     let pods: Api<Pod> = Api::all(client.clone());
     let nodes: Api<Node> = Api::all(client.clone());
 
-    let leader_config = LeaderElectionConfig::new("multus-taint-controller")
-        .with_election_duration(Duration::from_secs(15))
-        .with_renew_deadline(Duration::from_secs(10))
-        .with_relinquish_duration(Duration::from_secs(5));
+    // Simulate leader election logic (placeholder for actual election)
+    let leader = true; // Example: You need to implement your own leader election mechanism
 
-    // Adjusted the leader election call, removing the closure with additional argument
-    leader_config.run(client, |leader| async move {
-        if leader {
-            println!("I am the leader. Checking node taints...");
-            taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
-        } else {
-            println!("Not the leader, skipping node tainting.");
-        }
-    }).await?;
+    if leader {
+        println!("I am the leader. Checking node taints...");
+        taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
+    } else {
+        println!("Not the leader, skipping node tainting.");
+    }
 
     Ok(())
 }
