@@ -11,6 +11,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -34,4 +36,6 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t gucio1200/multus-readiness-controller:${{ github.sha }} .
+          docker build -t ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }} .
+          docker push ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }}
+
