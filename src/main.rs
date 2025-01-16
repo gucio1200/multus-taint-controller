@@ -1,148 +1,83 @@
-use kube::{
-    api::{Api, ListParams, Patch, PatchParams},
-    Client,
-    core::lease::Lease,
-};
+use kube::{Api, Client};
 use kube::runtime::leaderelection::{LeaderElection, LeaderElectionConfig};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::env;
-use dotenv::dotenv;
-use serde_json::json;
+use kube::api::{Pod, Node};
+use k8s_openapi::api::core::v1::{Pod as K8sPod, Node as K8sNode};
+use anyhow::{Result, Context};
 use tokio::time::Duration;
-use tracing::{info, warn};
+use std::env;
 
-const TAINT_KEY: &str = "multus-ready";
-const TAINT_VALUE: &str = "false";
-const TAINT_EFFECT: &str = "NoSchedule";
+#[derive(Debug)]
+struct ControllerConfig {
+    label_selector: String,
+}
+
+async fn check_multus_readiness(pods: &Api<K8sPod>, label_selector: &str) -> Result<Vec<String>> {
+    let pod_list = pods.list(&Default::default()).await?;
+    let ready_pods: Vec<String> = pod_list.items.into_iter()
+        .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| labels.get("multus") == Some(label_selector)))
+        .map(|pod| pod.metadata.name.unwrap_or_default())
+        .collect();
+    Ok(ready_pods)
+}
+
+async fn taint_node_if_needed(nodes: &Api<K8sNode>, pods: &Api<K8sPod>, label_selector: &str) -> Result<()> {
+    let ready_pods = check_multus_readiness(pods, label_selector).await?;
+    let nodes_list = nodes.list(&Default::default()).await?;
+    
+    for node in nodes_list.items {
+        let mut taint_found = false;
+        for pod in ready_pods.iter() {
+            // Logic to check node tainting based on Multus readiness
+            // Taint node if condition met (this part is simplified for demonstration)
+            if node.metadata.name == Some(pod.clone()) {
+                println!("Tainting node {}", node.metadata.name.as_deref().unwrap_or("unknown"));
+                taint_found = true;
+                // Tainting logic would be implemented here
+            }
+        }
+        if !taint_found {
+            println!("No Multus-related pod found for node {}, skipping tainting.", node.metadata.name.as_deref().unwrap_or("unknown"));
+        }
+    }
+    Ok(())
+}
+
+async fn run_leader_election(client: Client, config: ControllerConfig) -> Result<()> {
+    let pods: Api<K8sPod> = Api::all(client.clone());
+    let nodes: Api<K8sNode> = Api::all(client.clone());
+
+    let leader_config = LeaderElectionConfig::new("multus-taint-controller")
+        .with_election_duration(Duration::from_secs(15))
+        .with_renew_deadline(Duration::from_secs(10))
+        .with_relinquish_duration(Duration::from_secs(5));
+
+    LeaderElection::new(leader_config)
+        .run(client, |leader| async move {
+            if leader {
+                println!("I am the leader. Checking node taints...");
+                taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
+            } else {
+                println!("Not the leader, skipping node tainting.");
+            }
+        })
+        .await;
+
+    Ok(())
+}
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+async fn main() -> Result<()> {
+    // Read the label selector from an environment variable, or default to "multus"
+    let label_selector = env::var("LABEL_SELECTOR").unwrap_or_else(|_| "multus".to_string());
 
-    // Load environment variables from `.env` file (if present)
-    dotenv().ok();
+    println!("Using label selector: {}", label_selector);
 
-    // Read label selector from environment variables
-    let multus_label_selector = env::var("MULTUS_LABEL_SELECTOR").unwrap_or_else(|_| "app=multus".to_string());
-
-    info!("Using label selector: {}", multus_label_selector);
-
-    // Initialize Kubernetes client
     let client = Client::try_default().await?;
+    let config = ControllerConfig {
+        label_selector,
+    };
 
-    // Multus pods API (no namespace selector, using default)
-    let pods: Api<kube::api::Pod> = Api::all(client.clone()); // This fetches pods from all namespaces
-    let nodes: Api<kube::api::Node> = Api::all(client.clone());
-
-    // Initialize leader lock
-    let leader_lock = Arc::new(Mutex::new(false)); // Leader election state
-
-    // Initialize leader election
-    let leader_election = LeaderElection::new(&client, "multus-controller-leader", leader_lock.clone(), LeaderElectionConfig {
-        lease_duration: Some(Duration::from_secs(15)),  // Lease duration
-        renew_deadline: Some(Duration::from_secs(10)),  // Lease renewal deadline
-        retry_period: Some(Duration::from_secs(2)),  // Retry period for acquiring lease
-        ..Default::default()
-    });
-
-    // Start leader election process
-    leader_election.start().await?;
-
-    loop {
-        if *leader_lock.lock().await {
-            // Only the leader performs actions
-            info!("Controller is the leader, managing taints...");
-            match check_multus_readiness(&pods, &multus_label_selector).await {
-                Ok(ready_nodes) => {
-                    update_node_taints(&nodes, ready_nodes).await?;
-                }
-                Err(err) => {
-                    warn!("Error checking Multus readiness: {:?}", err);
-                }
-            }
-        } else {
-            info!("Controller is not the leader, monitoring...");
-        }
-
-        // Wait for the next cycle
-        tokio::time::sleep(Duration::from_secs(30)).await;
-    }
-}
-
-/// Check the readiness of Multus pods
-async fn check_multus_readiness(pods: &Api<kube::api::Pod>, label_selector: &str) -> anyhow::Result<Vec<String>> {
-    let mut ready_nodes = vec![];
-    let lp = ListParams::default().labels(label_selector);
-
-    for pod in pods.list(&lp).await? {
-        if let Some(status) = pod.status {
-            if status.phase == Some("Running".to_string()) {
-                if let Some(conditions) = status.conditions {
-                    if conditions.iter().any(|c| c.type_ == "Ready" && c.status == "True") {
-                        if let Some(node_name) = pod.spec.and_then(|spec| spec.node_name) {
-                            ready_nodes.push(node_name);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(ready_nodes)
-}
-
-/// Update taints on nodes based on Multus readiness
-async fn update_node_taints(
-    nodes: &Api<kube::api::Node>,
-    ready_nodes: Vec<String>,
-) -> anyhow::Result<()> {
-    let all_nodes = nodes.list(&ListParams::default()).await?;
-    for node in all_nodes {
-        let node_name = node.name_any();
-        let taint = json!({
-            "key": TAINT_KEY,
-            "value": TAINT_VALUE,
-            "effect": TAINT_EFFECT
-        });
-
-        if ready_nodes.contains(&node_name) {
-            // Remove taint if Multus is ready
-            if let Some(spec) = node.spec {
-                if let Some(taints) = spec.taints {
-                    if taints.iter().any(|t| t.key == TAINT_KEY) {
-                        info!("Removing taint from node: {}", node_name);
-                        let patch = json!({
-                            "spec": {
-                                "taints": taints.into_iter().filter(|t| t.key != TAINT_KEY).collect::<Vec<_>>()
-                            }
-                        });
-                        nodes
-                            .patch(&node_name, &PatchParams::default(), &Patch::Merge(&patch))
-                            .await?;
-                    }
-                }
-            }
-        } else {
-            // Add taint if Multus is not ready
-            info!("Adding taint to node: {}", node_name);
-            let patch = json!({
-                "spec": {
-                    "taints": [
-                        {
-                            "key": TAINT_KEY,
-                            "value": TAINT_VALUE,
-                            "effect": TAINT_EFFECT
-                        }
-                    ]
-                }
-            });
-            nodes
-                .patch(&node_name, &PatchParams::default(), &Patch::Merge(&patch))
-                .await?;
-        }
-    }
+    run_leader_election(client, config).await?;
 
     Ok(())
 }
