@@ -36,6 +36,7 @@ jobs:
 
       - name: Build Docker image
         run: |
+          docker login ghcr.io -u gucio1200 --password ${{ secrets.GHCR_TOKEN }}
           docker build -t ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }} .
           docker push ghcr.io/gucio1200/multus-readiness-controller:${{ github.sha }}
 
