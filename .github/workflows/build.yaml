@@ -32,5 +32,6 @@ jobs:
       - name: Install dependencies
         run: go mod tidy
 
-      - name: Install dependencies
-        run: go build
+      - name: Build Docker image
+        run: |
+          docker build -t gucio1200/multus-readiness-controller:${{ github.sha }} .
