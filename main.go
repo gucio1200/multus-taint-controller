@@ -12,7 +12,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 )
 
@@ -48,9 +47,8 @@ func main() {
 
 	// Set up leader election configuration
 	lec := leaderelection.LeaderElectionConfig{
-		Lock: &leaderelection.ResourceLock{
+		Lock: &leaderelection.ResourceLockConfigMap{
 			Client: clientset,
-			// The namespace and lock name should be passed here
 			LockConfig: leaderelection.ResourceLockConfig{
 				LockName:      leaderLockName,
 				LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
@@ -67,14 +65,8 @@ func main() {
 		panic(fmt.Sprintf("Error creating leader elector: %s", err))
 	}
 
-	// Set up the callback functions
-	leaderElector.Run(context.Background(), func(ctx context.Context) {
-		klog.Infof("Started leading...")
-		// Run your controller logic here
-		runController(clientset)
-	}, func() {
-		klog.Infof("Stopped leading.")
-	})
+	// Run the leader election loop
+	leaderElector.Run(context.Background())
 }
 
 // runController contains the logic for the controller
