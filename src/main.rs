@@ -1,8 +1,9 @@
-use kube::api::{Node, Patch, PatchParams};
-use k8s_openapi::api::core::v1::{Node as K8sNode, Taint};
-use kube::runtime::controller::Action;
 use kube::Client;
-use anyhow::{Context, Result};
+use kube::api::{Patch, PatchParams, ListParams};
+use kube_runtime::controller::Action;
+use k8s_openapi::api::core::v1::{Node as K8sNode, Pod};
+use kube::Api;
+use anyhow::{Result, Context};
 
 async fn taint_node_if_needed(
     nodes: &Api<K8sNode>,
@@ -18,16 +19,16 @@ async fn taint_node_if_needed(
         let nodes = nodes.list(&ListParams::default()).await?;
 
         for node in nodes.items {
-            let taint = Taint {
+            let taint = k8s_openapi::api::core::v1::Taint {
                 key: "multus".to_string(),
-                value: "unavailable".to_string(),
-                effect: "NoSchedule".to_string(),
+                value: Some("unavailable".to_string()),  // wrap value in Some
+                effect: Some("NoSchedule".to_string()),  // wrap effect in Some
                 ..Default::default()
             };
 
             // Patch the node with taint
             let patch = Patch::Apply(&K8sNode {
-                spec: Some(K8sNodeSpec {
+                spec: Some(k8s_openapi::api::core::v1::NodeSpec {
                     taints: Some(vec![taint]),
                     ..Default::default()
                 }),
@@ -61,3 +62,17 @@ async fn check_multus_readiness(pods: &Api<Pod>, label_selector: &str) -> Result
     Ok(ready_pods)
 }
 
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = Client::try_default().await?;
+    let pods = Api::<Pod>::all(client.clone());
+    let nodes = Api::<K8sNode>::all(client.clone());
+
+    // Label selector to identify multus pods
+    let label_selector = "some-label-selector";
+
+    // Run tainting logic
+    taint_node_if_needed(&nodes, &pods, label_selector).await?;
+
+    Ok(())
+}
