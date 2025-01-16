@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"os"
 	"io/ioutil"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 )
 
@@ -21,7 +18,6 @@ var (
 	taintKey       = "multus.network.k8s.io/readiness"
 	taintValue     = "false"
 	taintEffect    = corev1.TaintEffectNoSchedule
-	leaderLockName = "multus-leader-lock" // Name for the ConfigMap used in leader election
 )
 
 func main() {
@@ -45,33 +41,12 @@ func main() {
 		panic(fmt.Sprintf("Error reading namespace from file: %s", err))
 	}
 
-	// Set up leader election configuration
-	lec := leaderelection.LeaderElectionConfig{
-		Lock: &resourcelock.ConfigMapLock{
-			Client: clientset,
-			LockConfig: resourcelock.ResourceLockConfig{
-				// Specify the Lock Name and Namespace for ConfigMap
-				LockName:      leaderLockName,
-				LockNamespace: string(namespace), // Lock namespace will be dynamically set
-			},
-		},
-		LeaseDuration: 15 * time.Second,
-		RenewDeadline: 10 * time.Second,
-		RetryPeriod:   2 * time.Second,
-	}
-
-	// Create the leader elector
-	leaderElector, err := leaderelection.NewLeaderElector(lec)
-	if err != nil {
-		panic(fmt.Sprintf("Error creating leader elector: %s", err))
-	}
-
-	// Run the leader election loop
-	leaderElector.Run(context.Background())
+	// Run the controller logic
+	runController(clientset, string(namespace))
 }
 
 // runController contains the logic for the controller
-func runController(clientset *kubernetes.Clientset) {
+func runController(clientset *kubernetes.Clientset, namespace string) {
 	// Watch nodes for changes
 	nodeWatcher, err := clientset.CoreV1().Nodes().Watch(context.Background(), metav1.ListOptions{})
 	if err != nil {
