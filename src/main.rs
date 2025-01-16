@@ -1,8 +1,7 @@
 use kube::{Client, Api};
-use kube::api::{Pod, Node};
-use k8s_openapi::api::core::v1::{Pod as K8sPod, Node as K8sNode};
-use kube_leader_election::{LeaderElection, LeaderElectionConfig};
-use anyhow::{Result, Context};
+use k8s_openapi::api::core::v1::{Pod, Node};
+use kube_leader_election::{LeaderElectionConfig, run_leader_election};
+use anyhow::{Result};
 use tokio::time::Duration;
 use std::env;
 
@@ -11,16 +10,16 @@ struct ControllerConfig {
     label_selector: String,
 }
 
-async fn check_multus_readiness(pods: &Api<K8sPod>, label_selector: &str) -> Result<Vec<String>> {
+async fn check_multus_readiness(pods: &Api<Pod>, label_selector: &str) -> Result<Vec<String>> {
     let pod_list = pods.list(&Default::default()).await?;
     let ready_pods: Vec<String> = pod_list.items.into_iter()
-        .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| labels.get("multus") == Some(label_selector)))
+        .filter(|pod| pod.metadata.labels.as_ref().map_or(false, |labels| labels.get("multus") == Some(&label_selector)))
         .map(|pod| pod.metadata.name.unwrap_or_default())
         .collect();
     Ok(ready_pods)
 }
 
-async fn taint_node_if_needed(nodes: &Api<K8sNode>, pods: &Api<K8sPod>, label_selector: &str) -> Result<()> {
+async fn taint_node_if_needed(nodes: &Api<Node>, pods: &Api<Pod>, label_selector: &str) -> Result<()> {
     let ready_pods = check_multus_readiness(pods, label_selector).await?;
     let nodes_list = nodes.list(&Default::default()).await?;
     
@@ -43,24 +42,22 @@ async fn taint_node_if_needed(nodes: &Api<K8sNode>, pods: &Api<K8sPod>, label_se
 }
 
 async fn run_leader_election(client: Client, config: ControllerConfig) -> Result<()> {
-    let pods: Api<K8sPod> = Api::all(client.clone());
-    let nodes: Api<K8sNode> = Api::all(client.clone());
+    let pods: Api<Pod> = Api::all(client.clone());
+    let nodes: Api<Node> = Api::all(client.clone());
 
     let leader_config = LeaderElectionConfig::new("multus-taint-controller")
         .with_election_duration(Duration::from_secs(15))
         .with_renew_deadline(Duration::from_secs(10))
         .with_relinquish_duration(Duration::from_secs(5));
 
-    LeaderElection::new(leader_config)
-        .run(client, |leader| async move {
-            if leader {
-                println!("I am the leader. Checking node taints...");
-                taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
-            } else {
-                println!("Not the leader, skipping node tainting.");
-            }
-        })
-        .await;
+    run_leader_election(client, leader_config, |leader| async move {
+        if leader {
+            println!("I am the leader. Checking node taints...");
+            taint_node_if_needed(&nodes, &pods, &config.label_selector).await.unwrap();
+        } else {
+            println!("Not the leader, skipping node tainting.");
+        }
+    }).await?;
 
     Ok(())
 }
