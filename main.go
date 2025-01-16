@@ -12,7 +12,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
