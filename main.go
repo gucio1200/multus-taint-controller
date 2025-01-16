@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/tools/leaderelection/leaderelectionconfig"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 )
 
@@ -47,8 +47,8 @@ func main() {
 	}
 
 	// Set up leader election configuration
-	leaderElectionConfig := leaderelectionconfig.LeaderElectionConfig{
-		LeaderElect: true,
+	leaderElectionConfig := leaderelection.LeaderElectionConfig{
+		LeaderElect:   true,
 		LeaseDuration: 15 * time.Second,
 		RenewDeadline: 10 * time.Second,
 		RetryPeriod:   2 * time.Second,
@@ -56,13 +56,18 @@ func main() {
 		LockName:      leaderLockName,
 		LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
 		Client:        clientset,
+		OnStartedLeading: func(ctx context.Context) {
+			klog.Infof("Started leading...")
+			// Run your controller logic here
+			runController(clientset)
+		},
+		OnStoppedLeading: func() {
+			klog.Infof("Stopped leading.")
+		},
 	}
 
 	// Start leader election
 	leaderelection.RunOrDie(context.Background(), leaderElectionConfig)
-
-	// Once elected leader, run the controller logic
-	runController(clientset)
 }
 
 // runController contains the logic for the controller
