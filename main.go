@@ -12,9 +12,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/util/retry"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
@@ -41,7 +40,6 @@ func main() {
 	}
 
 	// Dynamically read the namespace from the file provided by Kubernetes
-	// The file /var/run/secrets/kubernetes.io/serviceaccount/namespace contains the namespace of the pod
 	namespace, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 	if err != nil {
 		panic(fmt.Sprintf("Error reading namespace from file: %s", err))
@@ -49,11 +47,12 @@ func main() {
 
 	// Set up leader election configuration
 	lec := leaderelection.LeaderElectionConfig{
-		Lock: &leaderelection.ResourceLockConfigMap{
+		Lock: &resourcelock.ConfigMapLock{
 			Client: clientset,
-			LockConfig: leaderelection.ResourceLockConfig{
+			LockConfig: resourcelock.ResourceLockConfig{
+				// Specify the Lock Name and Namespace for ConfigMap
 				LockName:      leaderLockName,
-				LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
+				LockNamespace: string(namespace), // Lock namespace will be dynamically set
 			},
 		},
 		LeaseDuration: 15 * time.Second,
