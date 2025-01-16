@@ -31,3 +31,6 @@ jobs:
 
       - name: Install dependencies
         run: go mod tidy
+
+      - name: Install dependencies
+        run: go build
