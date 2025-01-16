@@ -47,15 +47,18 @@ func main() {
 	}
 
 	// Set up leader election configuration
-	leaderElectionConfig := leaderelection.LeaderElectionConfig{
-		LeaderElect:   true,
+	lec := leaderelection.LeaderElectionConfig{
+		Lock:          &leaderelection.ResourceLockConfigMap{
+			Client: clientset,
+			LockConfig: leaderelection.ResourceLockConfig{
+				// The namespace and lock name should be passed here
+				LockName:      leaderLockName,
+				LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
+			},
+		},
 		LeaseDuration: 15 * time.Second,
 		RenewDeadline: 10 * time.Second,
 		RetryPeriod:   2 * time.Second,
-		ResourceLock:  leaderelection.ResourceLockConfigMap,
-		LockName:      leaderLockName,
-		LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
-		Client:        clientset,
 		OnStartedLeading: func(ctx context.Context) {
 			klog.Infof("Started leading...")
 			// Run your controller logic here
@@ -66,8 +69,14 @@ func main() {
 		},
 	}
 
+	// Create the leader elector
+	leaderElector, err := leaderelection.NewLeaderElector(lec)
+	if err != nil {
+		panic(fmt.Sprintf("Error creating leader elector: %s", err))
+	}
+
 	// Start leader election
-	leaderelection.RunOrDie(context.Background(), leaderElectionConfig)
+	leaderElector.Run(context.Background())
 }
 
 // runController contains the logic for the controller
