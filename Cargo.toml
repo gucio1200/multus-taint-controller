@@ -1,0 +1,7 @@
+[dependencies]
+kube = { version = "0.76", features = ["runtime"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.2"
+dotenv = "0.15"
