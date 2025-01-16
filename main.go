@@ -4,23 +4,34 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"io/ioutil"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/client-go/util/wait"
+	"k8s.io/client-go/util/leaderelection"
+	"k8s.io/client-go/util/leaderelection/leaderelectionconfig"
+	"k8s.io/klog/v2"
 )
 
 var (
-	labelSelector = os.Getenv("MULTUS_LABEL_SELECTOR")
-	taintKey      = "multus.network.k8s.io/readiness"
-	taintValue    = "false"
-	taintEffect   = corev1.TaintEffectNoSchedule
+	labelSelector  = os.Getenv("MULTUS_LABEL_SELECTOR")
+	taintKey       = "multus.network.k8s.io/readiness"
+	taintValue     = "false"
+	taintEffect    = corev1.TaintEffectNoSchedule
+	leaderLockName = "multus-leader-lock" // Name for the ConfigMap used in leader election
 )
 
 func main() {
+	klog.InitFlags(nil)
+	defer klog.Flush()
+
 	// In-cluster configuration for authenticating to Kubernetes API
-	config, err := rest.InClusterConfig() // Use InClusterConfig for authentication within the cluster
+	config, err := rest.InClusterConfig()
 	if err != nil {
 		panic(fmt.Sprintf("Error creating in-cluster config: %s", err))
 	}
@@ -30,6 +41,34 @@ func main() {
 		panic(fmt.Sprintf("Error creating clientset: %s", err))
 	}
 
+	// Dynamically read the namespace from the file provided by Kubernetes
+	// The file /var/run/secrets/kubernetes.io/serviceaccount/namespace contains the namespace of the pod
+	namespace, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		panic(fmt.Sprintf("Error reading namespace from file: %s", err))
+	}
+
+	// Set up leader election configuration
+	leaderElectionConfig := leaderelectionconfig.LeaderElectionConfig{
+		LeaderElect: true,
+		LeaseDuration: 15 * time.Second,
+		RenewDeadline: 10 * time.Second,
+		RetryPeriod:   2 * time.Second,
+		ResourceLock:  leaderelection.ResourceLockConfigMap,
+		LockName:      leaderLockName,
+		LockNamespace: string(namespace), // Set the LockNamespace dynamically based on the pod's namespace
+		Client:        clientset,
+	}
+
+	// Start leader election
+	leaderelection.RunOrDie(context.Background(), leaderElectionConfig)
+
+	// Once elected leader, run the controller logic
+	runController(clientset)
+}
+
+// runController contains the logic for the controller
+func runController(clientset *kubernetes.Clientset) {
 	// Watch nodes for changes
 	nodeWatcher, err := clientset.CoreV1().Nodes().Watch(context.Background(), metav1.ListOptions{})
 	if err != nil {
