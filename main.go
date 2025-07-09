@@ -23,7 +23,7 @@ var (
 
 func main() {
 	klog.InitFlags(nil)
-	flag.Set("v", "10") // Max verbosity
+	flag.Set("v", "6") // Max verbosity
 	flag.Parse()
 	defer klog.Flush()
 
