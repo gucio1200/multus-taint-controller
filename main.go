@@ -4,18 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
+	"io/ioutil"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 )
 
@@ -32,91 +27,36 @@ func main() {
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		klog.Fatalf("Error creating in-cluster config: %v", err)
+		panic(fmt.Sprintf("Error creating in-cluster config: %s", err))
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		klog.Fatalf("Error creating clientset: %v", err)
+		panic(fmt.Sprintf("Error creating clientset: %s", err))
 	}
 
-	ctx := context.Background()
-
-	// Create shared informer factory
-	informerFactory := informers.NewSharedInformerFactory(clientset, time.Minute)
-	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
-
-	// Workqueue with rate-limiting
-	queue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "nodes")
-
-	// Add event handlers to informer
-	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			key, _ := cache.MetaNamespaceKeyFunc(obj)
-			queue.Add(key)
-		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			key, _ := cache.MetaNamespaceKeyFunc(newObj)
-			queue.Add(key)
-		},
-	})
-
-	// Start informers
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	informerFactory.Start(stopCh)
-
-	// Wait for cache sync
-	if !cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced) {
-		klog.Fatal("Failed to sync caches")
+	namespace, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		panic(fmt.Sprintf("Error reading namespace from file: %s", err))
 	}
 
-	// Start workers
-	numWorkers := 4
-	for i := 0; i < numWorkers; i++ {
-		go runWorker(ctx, clientset, queue)
-	}
-
-	<-stopCh
+	runController(clientset, string(namespace))
 }
 
-func runWorker(ctx context.Context, clientset *kubernetes.Clientset, queue workqueue.RateLimitingInterface) {
-	for {
-		key, shutdown := queue.Get()
-		if shutdown {
-			return
-		}
+func runController(clientset *kubernetes.Clientset, namespace string) {
+	nodeWatcher, err := clientset.CoreV1().Nodes().Watch(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		panic(fmt.Sprintf("Error watching nodes: %s", err))
+	}
 
-		err := func() error {
-			defer queue.Done(key)
+	for event := range nodeWatcher.ResultChan() {
+		node := event.Object.(*corev1.Node)
+		nodeName := node.Name
 
-			obj, exists, err := cache.DeletionHandlingMetaNamespaceKeyFunc(key)
-			if err != nil {
-				klog.Errorf("Error getting key %s: %v", key, err)
-				queue.Forget(key)
-				return err
-			}
-			if !exists {
-				queue.Forget(key)
-				return nil
-			}
-
-			nodeName := key.(string)
-
-			// Reconcile node
-			if isMultusReady(clientset) {
-				untaintNode(clientset, nodeName)
-			} else {
-				taintNode(clientset, nodeName)
-			}
-
-			queue.Forget(key)
-			return nil
-		}()
-
-		if err != nil {
-			klog.Errorf("Error processing node: %v", err)
-			queue.AddRateLimited(key)
+		if isMultusReady(clientset) {
+			untaintNode(clientset, nodeName)
+		} else {
+			taintNode(clientset, nodeName)
 		}
 	}
 }
@@ -127,7 +67,7 @@ func isMultusReady(clientset *kubernetes.Clientset) bool {
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
-		klog.Warningf("Error listing pods: %v", err)
+		fmt.Println("Error checking Multus pod readiness:", err)
 		return false
 	}
 	return len(pods.Items) > 0
@@ -137,13 +77,13 @@ func taintNode(clientset *kubernetes.Clientset, nodeName string) {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 		if err != nil {
-			klog.Errorf("Error getting node %s: %v", nodeName, err)
+			fmt.Printf("Error getting node %s: %v\n", nodeName, err)
 			return err
 		}
 
 		for _, taint := range node.Spec.Taints {
 			if taint.Key == taintKey {
-				return nil
+				return nil // Already tainted
 			}
 		}
 
@@ -157,8 +97,9 @@ func taintNode(clientset *kubernetes.Clientset, nodeName string) {
 		_, err = clientset.CoreV1().Nodes().Update(context.Background(), nodeCopy, metav1.UpdateOptions{})
 		return err
 	})
+
 	if err != nil {
-		klog.Errorf("Failed to taint node %s: %v", nodeName, err)
+		fmt.Printf("Error tainting node %s: %v\n", nodeName, err)
 	}
 }
 
@@ -166,7 +107,7 @@ func untaintNode(clientset *kubernetes.Clientset, nodeName string) {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 		if err != nil {
-			klog.Errorf("Error getting node %s: %v", nodeName, err)
+			fmt.Printf("Error getting node %s: %v\n", nodeName, err)
 			return err
 		}
 
@@ -182,7 +123,8 @@ func untaintNode(clientset *kubernetes.Clientset, nodeName string) {
 		_, err = clientset.CoreV1().Nodes().Update(context.Background(), nodeCopy, metav1.UpdateOptions{})
 		return err
 	})
+
 	if err != nil {
-		klog.Errorf("Failed to remove taint from node %s: %v", nodeName, err)
+		fmt.Printf("Error removing taint from node %s: %v\n", nodeName, err)
 	}
 }
